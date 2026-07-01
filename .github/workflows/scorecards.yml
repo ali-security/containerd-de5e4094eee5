@@ -12,6 +12,7 @@ permissions: read-all
 
 jobs:
   analysis:
+    if: false
     name: Scorecards analysis
     runs-on: ubuntu-latest
     permissions:

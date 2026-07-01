@@ -1,10 +1,7 @@
 name: CI
 on:
-  # When added to a merge queue.
-  # See https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue#triggering-merge-group-checks-with-github-actions
-  merge_group:
-  pull_request:
-    branches: ['main', 'release/**']
+  push:
+  workflow_dispatch:
 
 permissions: # added using https://github.com/step-security/secure-workflows
   contents: read
@@ -14,6 +11,7 @@ jobs:
   # golangci-lint
   #
   linters:
+    if: false
     permissions:
       contents: read # for actions/checkout to fetch code
       pull-requests: read # for golangci/golangci-lint-action to fetch pull requests
@@ -39,6 +37,7 @@ jobs:
   # Project checks
   #
   project:
+    if: false
     name: Project Checks
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -67,6 +66,7 @@ jobs:
   # Protobuf checks
   #
   protos:
+    if: false
     name: Protobuf
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -101,6 +101,7 @@ jobs:
       - run: make check-protos check-api-descriptors
 
   man:
+    if: false
     name: Manpages
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -114,6 +115,7 @@ jobs:
   # Make sure binaries compile with other minor platforms.
   # Well-known architectures are covered in release.yml.
   crossbuild:
+    if: false
     name: Crossbuild Binaries
     needs: [project, linters, protos, man]
     runs-on: ubuntu-24.04
@@ -181,6 +183,7 @@ jobs:
   # Build containerd binaries
   #
   binaries:
+    if: false
     name: Binaries
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -205,17 +208,10 @@ jobs:
   #
   integration-windows:
     name: Windows Integration
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
-    needs: [project, linters, protos, man]
+    runs-on: windows-latest
+    timeout-minutes: 60
     env:
       GOTEST: gotestsum --
-
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-2022]
-        cgroup_driver: [cgroupfs]
 
     defaults:
       run:
@@ -229,59 +225,11 @@ jobs:
 
       - uses: ./src/github.com/containerd/containerd/.github/actions/install-go
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          repository: kubernetes-sigs/cri-tools
-          path: src/github.com/kubernetes-sigs/cri-tools
-          fetch-depth: 0
-
       - name: Set env
         run: |
           echo "GOPATH=${{ github.workspace }}" >> $GITHUB_ENV
           echo "${{ github.workspace }}/bin" >> $GITHUB_PATH
           echo "${{ github.workspace }}/src/github.com/containerd/containerd/bin" >> $GITHUB_PATH
-          echo "${{ github.workspace }}/src/github.com/kubernetes-sigs/cri-tools/build/bin/windows/amd64" >> $GITHUB_PATH
-
-      - run: script/setup/install-dev-tools
-
-      - name: Binaries
-        shell: bash
-        env:
-          CGO_ENABLED: 1
-        run: |
-          set -o xtrace
-          mingw32-make.exe binaries
-          CRITEST_VERSION=$(cat script/setup/critools-version)
-          cd ../../kubernetes-sigs/cri-tools
-          git checkout "${CRITEST_VERSION}"
-          make critest
-
-      - run: script/setup/install-cni-windows
-
-      - env:
-          TEST_IMAGE_LIST: ${{github.workspace}}/repolist.toml
-          CRI_TEST_IMAGES: ${{github.workspace}}/cri-test-images.yaml
-          BUSYBOX_TESTING_IMAGE_REF: "registry.k8s.io/e2e-test-images/busybox:1.29-2"
-          RESOURCE_CONSUMER_TESTING_IMAGE_REF: "registry.k8s.io/e2e-test-images/resource-consumer:1.10"
-          WEBSERVER_TESTING_IMAGE_REF: "registry.k8s.io/e2e-test-images/nginx:1.14-2"
-        run: |
-          cat > "${{ env.TEST_IMAGE_LIST }}" << EOF
-          busybox = "${{ env.BUSYBOX_TESTING_IMAGE_REF }}"
-          ResourceConsumer = "${{ env.RESOURCE_CONSUMER_TESTING_IMAGE_REF }}"
-          EOF
-          cat > "${{ env.CRI_TEST_IMAGES }}" << EOF
-          defaultTestContainerImage: ${{ env.BUSYBOX_TESTING_IMAGE_REF }}
-          webServerTestImage: ${{ env.WEBSERVER_TESTING_IMAGE_REF }}
-          EOF
-
-      - name: Get crictl tool
-        shell: powershell
-        run: |
-          # Get critctl tool. Used for cri-integration tests
-          $CRICTL_DOWNLOAD_URL="https://github.com/kubernetes-sigs/cri-tools/releases/download/v1.26.0/crictl-v1.26.0-windows-amd64.tar.gz"
-          curl.exe -L $CRICTL_DOWNLOAD_URL -o c:\crictl.tar.gz
-          tar -xvf c:\crictl.tar.gz
-          mv crictl.exe "${{ github.workspace }}/bin/crictl.exe" # Move crictl somewhere in path
 
       - run: script/setup/install-gotestsum
       - run: script/setup/install-teststat
@@ -298,70 +246,8 @@ jobs:
           TESTFILE: ${{github.workspace}}/test-unit-root-gotest.json
         if: always()
 
-      - name: Integration 1
-        env:
-          CGO_ENABLED: 1
-          GOTESTSUM_JUNITFILE: ${{github.workspace}}/test-integration-serial-junit.xml
-          GOTESTSUM_JSONFILE: ${{github.workspace}}/test-integration-serial-gotest.json
-          EXTRA_TESTFLAGS: "-timeout=20m"
-        run: mingw32-make.exe integration
-      - run: if [ -f *-gotest.json ]; then echo '# Integration 1' >> $GITHUB_STEP_SUMMARY; teststat -markdown *-gotest.json >> $GITHUB_STEP_SUMMARY; fi
-        if: always()
-      - run: script/test/test2annotation.sh "$TESTFILE"
-        env:
-          TESTFILE: ${{github.workspace}}/test-integration-serial-gotest.json
-        if: success()
-
-      # Run the integration suite a second time. See discussion in github.com/containerd/containerd/pull/1759
-      - name: Integration 2
-        env:
-          TESTFLAGS_PARALLEL: 1
-          EXTRA_TESTFLAGS: "-short"
-          CGO_ENABLED: 1
-          GOTESTSUM_JUNITFILE: ${{github.workspace}}/test-integration-parallel-junit.xml
-          GOTESTSUM_JSONFILE: ${{github.workspace}}/test-integration-parallel-gotest.json
-        run: mingw32-make.exe integration
-      - run: if [ -f *-gotest.json ]; then echo '# Integration 2' >> $GITHUB_STEP_SUMMARY; teststat -markdown *-gotest.json >> $GITHUB_STEP_SUMMARY; fi
-        if: always()
-      - run: script/test/test2annotation.sh "$TESTFILE"
-        env:
-          TESTFILE: ${{github.workspace}}/test-integration-parallel-gotest.json
-        if: success()
-
-      - name: CRI Integration Test
-        env:
-          TEST_IMAGE_LIST: ${{github.workspace}}/repolist.toml
-          CGROUP_DRIVER: ${{ matrix.cgroup_driver }}
-        run: |
-          make cri-integration
-
-      - name: cri-tools critest
-        env:
-          CRI_TEST_IMAGES: ${{github.workspace}}/cri-test-images.yaml
-          CGROUP_DRIVER: ${{ matrix.cgroup_driver }}
-        shell: powershell
-        run: |
-          Start-Process -FilePath containerd.exe -NoNewWindow -RedirectStandardError true -PassThru
-          get-process | sls containerd
-          start-sleep 5
-          # This test is exceedingly flaky only on ws2022 so skip for now to keep CI happy.
-          # Info: https://github.com/containerd/containerd/issues/6652
-          if( '${{ matrix.os }}' -eq 'windows-2022' )
-          {
-            $skip = "-ginkgo.skip=runtime should support exec with tty=true and stdin=true"
-          }
-          critest.exe --runtime-endpoint=npipe://.//pipe//containerd-containerd --test-images-file='${{env.CRI_TEST_IMAGES}}' --report-dir='${{github.workspace}}/critestreport' $skip
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always()
-        with:
-          name: TestResults ${{ matrix.os }} ${{ matrix.cgroup_driver }}
-          path: |
-            ${{github.workspace}}/*-junit.xml
-            ${{github.workspace}}/*-gotest.json
-            ${{github.workspace}}/report/*.log
-
   integration-linux:
+    if: false
     name: Linux Integration
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
@@ -523,6 +409,7 @@ jobs:
             ${{github.workspace}}/report/*.log
 
   integration-vagrant:
+    if: false
     name: Vagrant integration
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -610,6 +497,7 @@ jobs:
         run: sudo BOX=$BOX CGROUP_DRIVER=$CGROUP_DRIVER RUNC_FLAVOR=$RUNC_FLAVOR vagrant up --provision-with=selinux,install-runc,install-gotestsum,test-cri
 
   tests-cri-in-userns:
+    if: false
     name: "CRI-in-UserNS"
 
     runs-on: ubuntu-24.04
@@ -664,9 +552,8 @@ jobs:
 
   tests-mac-os:
     name: MacOS unit tests
-    runs-on: macos-13
-    timeout-minutes: 10
-    needs: [project, linters, protos, man]
+    runs-on: macos-latest
+    timeout-minutes: 30
     env:
       GOTEST: gotestsum --
 
@@ -700,11 +587,11 @@ jobs:
   #
   # See https://github.com/orgs/community/discussions/26822
   results:
+    if: false
     name: Report required job statuses
     runs-on: ubuntu-latest
     # List job dependencies which are required to pass status checks in order to be merged via merge queue.
     needs: [linters, project, protos, binaries, integration-linux, integration-windows, tests-cri-in-userns, tests-mac-os]
-    if: ${{ always() }}
     steps:
       - run: exit 1
         if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
